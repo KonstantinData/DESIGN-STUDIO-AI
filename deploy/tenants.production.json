@@ -1,0 +1,11 @@
+[
+  {
+    "host": "mein-kuechenexperte.de",
+    "slug": "mein-kuechenexperte",
+    "brand": "Mein Küchenexperte",
+    "expert_name": "Konstantin",
+    "turnstile_site_key": "0x4AAAAAAFapTMCyAihycY37",
+    "budget_cents": 500,
+    "enabled": false
+  }
+]
