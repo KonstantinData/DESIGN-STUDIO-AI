@@ -1,0 +1,125 @@
+name: design-studio-ai
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: deploy/backend.Dockerfile
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs: ['/tmp:size=128m,mode=1777']
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  environment: &backend-env
+    DATABASE_URL: postgresql+psycopg://studio_app:${POSTGRES_PASSWORD:?Create private .env first}@db:5432/studio
+    DATA_DIR: /var/lib/studio/private
+    TENANTS_JSON: ${TENANTS_JSON:?Configure trusted tenant hostnames}
+    STUDIO_OPENAI_API_KEY: ${STUDIO_OPENAI_API_KEY:-}
+    OPENAI_TEXT_MODEL: ${OPENAI_TEXT_MODEL:-gpt-4.1-mini}
+    OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-gpt-image-1.5}
+    OPENAI_REFERENCE_IMAGE_MODEL: ${OPENAI_REFERENCE_IMAGE_MODEL:-}
+    TURNSTILE_SECRET: ${TURNSTILE_SECRET:-}
+    HARD_LIMIT_VERIFIED_AT: ${HARD_LIMIT_VERIFIED_AT:-}
+    HANDOFF_AUTH_MEIN_KUECHENEXPERTE: ${HANDOFF_AUTH_MEIN_KUECHENEXPERTE:-}
+    HANDOFF_AUTH_ISOLATION_CHECK: ${HANDOFF_AUTH_ISOLATION_CHECK:-}
+    PROVIDER_ENABLED: ${PROVIDER_ENABLED:-false}
+    BUDGET_APPROVED: ${BUDGET_APPROVED:-false}
+    GLOBAL_KILL_SWITCH: ${GLOBAL_KILL_SWITCH:-true}
+    GLOBAL_BUDGET_CENTS: ${GLOBAL_BUDGET_CENTS:-500}
+    ALLOW_LOCAL_HTTP: ${ALLOW_LOCAL_HTTP:-false}
+    TRUSTED_PROXY_CIDRS: 172.30.74.2/32
+    RATE_LIMIT_SECRET: ${RATE_LIMIT_SECRET:-}
+    VERIFIED_PRICING_FILE: ${VERIFIED_PRICING_FILE:-}
+    VERIFIED_PRICING_SHA256: ${VERIFIED_PRICING_SHA256:-}
+    DELETION_LEDGER_DIR: /var/lib/studio/deletions
+    MAX_UPLOAD_REQUEST_BYTES: ${MAX_UPLOAD_REQUEST_BYTES:-13631488}
+    MAX_JSON_REQUEST_BYTES: ${MAX_JSON_REQUEST_BYTES:-32768}
+    REQUEST_BODY_TIMEOUT_SECONDS: ${REQUEST_BODY_TIMEOUT_SECONDS:-20}
+    PROVIDER_TEXT_DEADLINE_SECONDS: ${PROVIDER_TEXT_DEADLINE_SECONDS:-90}
+    PROVIDER_IMAGE_DEADLINE_SECONDS: ${PROVIDER_IMAGE_DEADLINE_SECONDS:-240}
+    PROVIDER_CURATION_DEADLINE_SECONDS: ${PROVIDER_CURATION_DEADLINE_SECONDS:-90}
+  volumes: [private_media:/var/lib/studio/private, deletion_ledger:/var/lib/studio/deletions, pricing_contract:/etc/studio/pricing:ro]
+  networks: [private, egress, proxy]
+services:
+  db:
+    image: postgres:17.7-bookworm@sha256:86e0b703649d7a792bd9243ee28afc9d8f7c6b2b5638077c9d6882d4d472bbfd
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: studio
+      POSTGRES_USER: studio_admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Provision separate admin password}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_PASSWORD:?Create private .env first}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./deploy/postgres-init.sh:/docker-entrypoint-initdb.d/10-app-user.sh:ro
+    networks: [private]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U studio_app -d studio']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    security_opt: [no-new-privileges:true]
+  migrate:
+    <<: *backend
+    restart: 'no'
+    command: [alembic, upgrade, head]
+    depends_on:
+      db: {condition: service_healthy}
+  backend:
+    <<: *backend
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz',timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+  worker:
+    <<: *backend
+    command: [python, -m, app.worker]
+    healthcheck:
+      test: [CMD, python, -c, "import os,time; assert time.time()-os.stat('/tmp/worker-heartbeat').st_mtime<120"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+  web:
+    build:
+      context: .
+      dockerfile: deploy/frontend.Dockerfile
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      SITE_ADDRESSES: ${SITE_ADDRESSES:?Configure TLS hostnames or explicit local HTTP address}
+    ports:
+      - '${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:8080'
+      - '${HTTPS_BIND:-127.0.0.1}:${HTTPS_PORT:-8443}:8443'
+    volumes: [caddy_data:/data, caddy_config:/config]
+    networks:
+      edge: {}
+      proxy: {ipv4_address: 172.30.74.2}
+    depends_on:
+      backend: {condition: service_healthy}
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q -O /dev/null http://127.0.0.1:8090/healthz']
+      interval: 15s
+      timeout: 5s
+      retries: 6
+networks:
+  private: {internal: true}
+  edge: {}
+  egress: {}
+  proxy:
+    internal: true
+    ipam:
+      config: [{subnet: 172.30.74.0/28, ip_range: 172.30.74.8/29}]
+volumes:
+  postgres: {}
+  private_media: {}
+  deletion_ledger: {}
+  pricing_contract: {}
+  caddy_data: {}
+  caddy_config: {}

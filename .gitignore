@@ -218,3 +218,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Private runtime and generated frontend outputs
+.env.*
+!.env.example
+.runtime/
+private-media/
+backups/
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+.deploy.env

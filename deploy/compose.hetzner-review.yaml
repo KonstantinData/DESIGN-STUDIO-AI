@@ -1,0 +1,31 @@
+# Host nginx owns 80/443. No cloud proxy/environment is transferred.
+services:
+  backend:
+    image: design-studio-review-backend:review
+    environment: &closed
+      PROVIDER_ENABLED: ${PROVIDER_ENABLED:-false}
+      BUDGET_APPROVED: ${BUDGET_APPROVED:-false}
+      GLOBAL_KILL_SWITCH: ${GLOBAL_KILL_SWITCH:-true}
+      ALLOW_LOCAL_HTTP: 'false'
+  worker:
+    image: design-studio-review-backend:review
+    environment: *closed
+  migrate:
+    image: design-studio-review-backend:review
+    environment: *closed
+  web:
+    environment:
+      SITE_ADDRESSES: http://studio.mein-kuechenexperte.de:8080
+      STUDIO_REVIEW_USERNAME: ${STUDIO_REVIEW_USERNAME:?Choose a private review login}
+      STUDIO_REVIEW_PASSWORD_HASH: ${STUDIO_REVIEW_PASSWORD_HASH:?Generate a real Caddy password hash securely}
+    ports: !override
+      - '127.0.0.1:8788:8080'
+    volumes:
+      - ./deploy/Caddyfile.hetzner:/etc/caddy/Caddyfile:ro
+    networks: !override
+      review_edge: {ipv4_address: 172.30.75.2}
+      proxy: {ipv4_address: 172.30.74.2}
+networks:
+  review_edge:
+    ipam:
+      config: [{subnet: 172.30.75.0/28, ip_range: 172.30.75.8/29, gateway: 172.30.75.1}]
